@@ -121,6 +121,7 @@ emulation:
 
             self.assertFalse(archive_directory.exists())
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 listener.bind((HOST, port))
 
     @staticmethod
