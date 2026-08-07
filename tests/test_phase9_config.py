@@ -31,7 +31,7 @@ class VisualizationConfigTests(unittest.TestCase):
             )
             config = load_application_config(config_path)
             output_exists = (root / "plots").exists()
-            return config, output_exists, root
+            return config, output_exists, root.resolve()
 
     def test_enabled_config_resolves_path_without_creating_it(self) -> None:
         config, output_exists, root = self._load(
