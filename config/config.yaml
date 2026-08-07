@@ -1,0 +1,49 @@
+testing:
+  sampling:
+    measurements_count: 5
+    total_duration_seconds: null
+    sampling_frequency_hz: 5.0
+  # The supplied emulators do not measure one shared physical current, so no
+  # scientifically meaningful default verdict policy is assumed. Configure an
+  # explicit reference and limits for the bench setup before using Phase 7.
+  acceptance: null
+
+communication:
+  request_timeout_seconds: 1.0
+  server_startup_timeout_seconds: 2.0
+  server_shutdown_timeout_seconds: 2.0
+
+# Phase 10 scenarios are opt-in and deterministic. Rules count only accepted
+# measurement commands, starting from one each time an emulator is started.
+emulation:
+  fault_injection:
+    enabled: false
+    ammeters: {}
+
+ammeters:
+  greenlee:
+    host: "127.0.0.1"
+    port: 5000
+    command: "MEASURE_GREENLEE -get_measurement"
+  entes:
+    host: "127.0.0.1"
+    port: 5001
+    command: "MEASURE_ENTES -get_data"
+  circutor:
+    host: "127.0.0.1"
+    port: 5002
+    command: "MEASURE_CIRCUTOR -get_measurement"
+
+analysis:
+  # Phase 4 calculates all five required metrics unconditionally. Metric
+  # selection remains reserved; Phase 9 implements the visualization settings.
+  statistical_metrics: []
+  visualization:
+    enabled: false
+    plot_types: []
+    output_directory: "../plots"
+    image_format: "png"
+    dpi: 160
+
+result_management:
+  archive_directory: "../results"
