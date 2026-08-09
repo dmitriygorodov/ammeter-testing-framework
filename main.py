@@ -34,6 +34,7 @@ from src.utils.config import (
     ConfigurationError,
     load_application_config,
 )
+from src.utils.logger import TestLogger
 
 
 LOGGER = logging.getLogger(__name__)
@@ -49,15 +50,17 @@ def run_demo(config_path: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, float]:
     """Start all configured emulators, read each once, then shut them down."""
 
     config = load_application_config(config_path)
-    framework = AmmeterTestFramework(
-        registry=AmmeterFactory().create_registry(config)
-    )
-    with _running_configured_emulators(config) as configured_emulators:
-        measurements: dict[str, float] = {}
-        for settings, _ in configured_emulators:
-            measurement = framework.measure_once(settings.name)
-            measurements[settings.name] = measurement.current_a
-        return measurements
+    with TestLogger("demo") as logger:
+        framework = AmmeterTestFramework(
+            registry=AmmeterFactory().create_registry(config),
+            logger=logger,
+        )
+        with _running_configured_emulators(config) as configured_emulators:
+            measurements: dict[str, float] = {}
+            for settings, _ in configured_emulators:
+                measurement = framework.measure_once(settings.name)
+                measurements[settings.name] = measurement.current_a
+            return measurements
 
 
 def run_sampling_demo(
@@ -69,22 +72,24 @@ def run_sampling_demo(
 
     config = load_application_config(config_path)
     sampling_plan = _configured_sampling_plan(config)
-    framework = AmmeterTestFramework(
-        registry=AmmeterFactory().create_registry(config),
-        sampling_plan=sampling_plan,
-    )
-    requested_names = (
-        [ammeter_name]
-        if ammeter_name is not None
-        else [settings.name for settings in config.ammeters]
-    )
+    with TestLogger("sampling_demo") as logger:
+        framework = AmmeterTestFramework(
+            registry=AmmeterFactory().create_registry(config),
+            sampling_plan=sampling_plan,
+            logger=logger,
+        )
+        requested_names = (
+            [ammeter_name]
+            if ammeter_name is not None
+            else [settings.name for settings in config.ammeters]
+        )
 
-    with _running_configured_emulators(config):
-        results: dict[str, SamplingRunResult] = {}
-        for requested_name in requested_names:
-            result = framework.run_test(requested_name)
-            results[result.ammeter_name] = result
-        return results
+        with _running_configured_emulators(config):
+            results: dict[str, SamplingRunResult] = {}
+            for requested_name in requested_names:
+                result = framework.run_test(requested_name)
+                results[result.ammeter_name] = result
+            return results
 
 
 def run_analysis_demo(
@@ -95,22 +100,25 @@ def run_analysis_demo(
     """Sample and statistically analyze one or all local emulators."""
 
     config = load_application_config(config_path)
-    framework = AmmeterTestFramework(
-        registry=AmmeterFactory().create_registry(config),
-        sampling_plan=_configured_sampling_plan(config),
-    )
-    requested_names = (
-        [ammeter_name]
-        if ammeter_name is not None
-        else [settings.name for settings in config.ammeters]
-    )
+    sampling_plan = _configured_sampling_plan(config)
+    with TestLogger("analysis_demo") as logger:
+        framework = AmmeterTestFramework(
+            registry=AmmeterFactory().create_registry(config),
+            sampling_plan=sampling_plan,
+            logger=logger,
+        )
+        requested_names = (
+            [ammeter_name]
+            if ammeter_name is not None
+            else [settings.name for settings in config.ammeters]
+        )
 
-    with _running_configured_emulators(config):
-        results: dict[str, AnalyzedSamplingResult] = {}
-        for requested_name in requested_names:
-            result = framework.run_analyzed_test(requested_name)
-            results[result.ammeter_name] = result
-        return results
+        with _running_configured_emulators(config):
+            results: dict[str, AnalyzedSamplingResult] = {}
+            for requested_name in requested_names:
+                result = framework.run_analyzed_test(requested_name)
+                results[result.ammeter_name] = result
+            return results
 
 
 def run_archive_demo(
@@ -130,26 +138,29 @@ def run_archive_demo(
                 "An archive demo requires result_management.archive_directory"
             )
         archive_directory = configured_result_management.archive_directory
-    framework = AmmeterTestFramework(
-        registry=AmmeterFactory().create_registry(config),
-        sampling_plan=_configured_sampling_plan(config),
-        result_archive=JsonResultArchive(archive_directory),
-    )
-    requested_names = (
-        [ammeter_name]
-        if ammeter_name is not None
-        else [settings.name for settings in config.ammeters]
-    )
+    sampling_plan = _configured_sampling_plan(config)
+    with TestLogger("archive_demo") as logger:
+        framework = AmmeterTestFramework(
+            registry=AmmeterFactory().create_registry(config),
+            sampling_plan=sampling_plan,
+            result_archive=JsonResultArchive(archive_directory),
+            logger=logger,
+        )
+        requested_names = (
+            [ammeter_name]
+            if ammeter_name is not None
+            else [settings.name for settings in config.ammeters]
+        )
 
-    with _running_configured_emulators(config):
-        results: dict[str, ArchivedTestResult] = {}
-        for requested_name in requested_names:
-            result = framework.run_archived_test(
-                requested_name,
-                metadata=metadata,
-            )
-            results[result.ammeter_name] = result
-        return results
+        with _running_configured_emulators(config):
+            results: dict[str, ArchivedTestResult] = {}
+            for requested_name in requested_names:
+                result = framework.run_archived_test(
+                    requested_name,
+                    metadata=metadata,
+                )
+                results[result.ammeter_name] = result
+            return results
 
 
 def run_accuracy_assessment(
@@ -169,14 +180,16 @@ def run_accuracy_assessment(
                 "Accuracy assessment requires an archive directory"
             )
         archive_directory = configured_result_management.archive_directory
-    framework = AmmeterTestFramework(
-        registry=AmmeterRegistry(),
-        result_archive=JsonResultArchive(archive_directory),
-    )
-    return framework.assess_archived_accuracy(
-        run_ids,
-        reference=reference,
-    )
+    with TestLogger("accuracy_assessment") as logger:
+        framework = AmmeterTestFramework(
+            registry=AmmeterRegistry(),
+            result_archive=JsonResultArchive(archive_directory),
+            logger=logger,
+        )
+        return framework.assess_archived_accuracy(
+            run_ids,
+            reference=reference,
+        )
 
 
 def run_acceptance_demo(
@@ -206,19 +219,22 @@ def run_acceptance_demo(
         policies[requested_name] = acceptance_policy_from_config(
             configured_policy
         )
-    framework = AmmeterTestFramework(
-        registry=AmmeterFactory().create_registry(config),
-        sampling_plan=_configured_sampling_plan(config),
-    )
-    with _running_configured_emulators(config):
-        results: dict[str, EvaluatedSamplingResult] = {}
-        for requested_name in requested_names:
-            result = framework.run_evaluated_test(
-                requested_name,
-                policy=policies[requested_name],
-            )
-            results[result.analyzed_result.ammeter_name] = result
-        return results
+    sampling_plan = _configured_sampling_plan(config)
+    with TestLogger("acceptance_demo") as logger:
+        framework = AmmeterTestFramework(
+            registry=AmmeterFactory().create_registry(config),
+            sampling_plan=sampling_plan,
+            logger=logger,
+        )
+        with _running_configured_emulators(config):
+            results: dict[str, EvaluatedSamplingResult] = {}
+            for requested_name in requested_names:
+                result = framework.run_evaluated_test(
+                    requested_name,
+                    policy=policies[requested_name],
+                )
+                results[result.analyzed_result.ammeter_name] = result
+            return results
 
 
 def run_consistency_assessment(
@@ -237,11 +253,13 @@ def run_consistency_assessment(
                 "Consistency assessment requires an archive directory"
             )
         archive_directory = configured_result_management.archive_directory
-    framework = AmmeterTestFramework(
-        registry=AmmeterRegistry(),
-        result_archive=JsonResultArchive(archive_directory),
-    )
-    return framework.assess_archived_consistency(run_ids)
+    with TestLogger("consistency_assessment") as logger:
+        framework = AmmeterTestFramework(
+            registry=AmmeterRegistry(),
+            result_archive=JsonResultArchive(archive_directory),
+            logger=logger,
+        )
+        return framework.assess_archived_consistency(run_ids)
 
 
 def render_archived_visualization(
@@ -312,25 +330,27 @@ def render_archived_visualization(
         visualization = None if config is None else config.visualization
         dpi = 160 if visualization is None else visualization.dpi
 
-    framework = AmmeterTestFramework(
-        registry=AmmeterRegistry(),
-        result_archive=JsonResultArchive(archive_directory),
-        result_visualizer=ResultVisualizer(),
-    )
-    if plot_type == "run_overview":
-        archived = framework.load_archived_result(requested_ids[0])
-        figure = framework.visualize_result(archived.analyzed_result)
-    elif plot_type == "accuracy":
-        assert reference is not None
-        assessment = framework.assess_archived_accuracy(
-            requested_ids,
-            reference=reference,
+    with TestLogger("visualization") as logger:
+        framework = AmmeterTestFramework(
+            registry=AmmeterRegistry(),
+            result_archive=JsonResultArchive(archive_directory),
+            result_visualizer=ResultVisualizer(),
+            logger=logger,
         )
-        figure = framework.visualize_accuracy(assessment)
-    else:
-        assessment = framework.assess_archived_consistency(requested_ids)
-        figure = framework.visualize_consistency(assessment)
-    return framework.save_visualization(figure, output_path, dpi=dpi)
+        if plot_type == "run_overview":
+            archived = framework.load_archived_result(requested_ids[0])
+            figure = framework.visualize_result(archived.analyzed_result)
+        elif plot_type == "accuracy":
+            assert reference is not None
+            assessment = framework.assess_archived_accuracy(
+                requested_ids,
+                reference=reference,
+            )
+            figure = framework.visualize_accuracy(assessment)
+        else:
+            assessment = framework.assess_archived_consistency(requested_ids)
+            figure = framework.visualize_consistency(assessment)
+        return framework.save_visualization(figure, output_path, dpi=dpi)
 
 
 def _configured_sampling_plan(config: ApplicationConfig) -> SamplingPlan:

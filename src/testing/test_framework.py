@@ -65,7 +65,9 @@ class AmmeterTestFramework:
         result_evaluator: ResultEvaluator | None = None,
         consistency_analyzer: HistoricalConsistencyAnalyzer | None = None,
         result_visualizer: ResultVisualizer | None = None,
+        logger: object | None = None,
     ) -> None:
+        self._logger = _validated_logger(logger)
         if sampling_plan is not None and not isinstance(
             sampling_plan,
             SamplingPlan,
@@ -192,15 +194,40 @@ class AmmeterTestFramework:
     def measure_once(self, ammeter_name: str) -> CurrentMeasurement:
         """Read one typed current measurement from a configured ammeter."""
 
-        return self._registry.get(ammeter_name).read_current()
+        try:
+            measurement = self._registry.get(ammeter_name).read_current()
+        except Exception as exc:
+            if self._logger is not None:
+                self._logger.error(
+                    f"Single read of {ammeter_name!r} failed: {exc}"
+                )
+            raise
+        if self._logger is not None:
+            self._logger.info(
+                f"Read {measurement.ammeter_name}: "
+                f"{measurement.current_a:.6f} A "
+                f"(latency {measurement.latency_seconds * 1e3:.3f} ms)"
+            )
+        return measurement
 
     def measure_all_once(self) -> dict[str, CurrentMeasurement]:
         """Read each configured ammeter once, preserving registry order."""
 
-        return {
-            name: self._registry.get(name).read_current()
-            for name in self.available_ammeters
-        }
+        try:
+            measurements = {
+                name: self._registry.get(name).read_current()
+                for name in self.available_ammeters
+            }
+        except Exception as exc:
+            if self._logger is not None:
+                self._logger.error(f"Reading all ammeters failed: {exc}")
+            raise
+        if self._logger is not None:
+            self._logger.info(
+                f"Read {len(measurements)} ammeter(s): "
+                f"{', '.join(measurements)}"
+            )
+        return measurements
 
     def run_test(
         self,
@@ -216,8 +243,30 @@ class AmmeterTestFramework:
             raise SamplingConfigurationError(
                 "No sampling plan was provided and no default is configured"
             )
+        if self._logger is not None:
+            self._logger.info(
+                f"Starting sampling run for {ammeter_name!r} "
+                f"(frequency={effective_plan.sampling_frequency_hz} Hz, "
+                f"count={effective_plan.measurements_count}, "
+                f"duration={effective_plan.total_duration_seconds})"
+            )
         ammeter = self._registry.get(ammeter_name)
-        return self._sampling_runner.run(ammeter, effective_plan)
+        try:
+            result = self._sampling_runner.run(ammeter, effective_plan)
+        except Exception as exc:
+            if self._logger is not None:
+                self._logger.error(
+                    f"Sampling run for {ammeter_name!r} failed: {exc}"
+                )
+            raise
+        if self._logger is not None:
+            self._logger.info(
+                f"Completed sampling run for {result.ammeter_name}: "
+                f"{result.sample_count} sample(s), "
+                f"elapsed {result.elapsed_seconds:.3f}s, "
+                f"stop={result.stop_reason.value}"
+            )
+        return result
 
     def analyze_result(
         self,
@@ -225,7 +274,22 @@ class AmmeterTestFramework:
     ) -> CurrentStatistics:
         """Analyze already-acquired evidence without reading the device again."""
 
-        return self._result_analyzer.analyze(sampling_result)
+        try:
+            statistics = self._result_analyzer.analyze(sampling_result)
+        except Exception as exc:
+            if self._logger is not None:
+                self._logger.error(f"Result analysis failed: {exc}")
+            raise
+        if self._logger is not None:
+            self._logger.info(
+                f"Analyzed {statistics.ammeter_name}: "
+                f"mean={statistics.mean_current_a:.6f} A, "
+                f"std={statistics.standard_deviation_current_a:.6f} A, "
+                f"min={statistics.minimum_current_a:.6f} A, "
+                f"max={statistics.maximum_current_a:.6f} A "
+                f"(n={statistics.sample_count})"
+            )
+        return statistics
 
     def run_analyzed_test(
         self,
@@ -255,11 +319,26 @@ class AmmeterTestFramework:
             analyzed_result.ammeter_name,
             policy,
         )
-        return self._result_evaluator.evaluate(
-            analyzed_result,
-            policy=effective_policy,
-            source_run_id=None,
-        )
+        try:
+            verdict = self._result_evaluator.evaluate(
+                analyzed_result,
+                policy=effective_policy,
+                source_run_id=None,
+            )
+        except Exception as exc:
+            if self._logger is not None:
+                self._logger.error(
+                    f"Evaluation of {analyzed_result.ammeter_name} failed: {exc}"
+                )
+            raise
+        if self._logger is not None:
+            self._logger.info(
+                f"Verdict for {verdict.ammeter_name}: "
+                f"{verdict.status.value.upper()} "
+                f"({verdict.passed_check_count}/{len(verdict.checks)} "
+                f"checks passed) under policy {verdict.policy.identifier}"
+            )
+        return verdict
 
     def run_evaluated_test(
         self,
@@ -292,7 +371,7 @@ class AmmeterTestFramework:
     ) -> ArchivedTestResult:
         """Persist already-analyzed evidence without reading a device."""
 
-        return self._require_result_archive().save(analyzed_result, metadata)
+        return self._save_archived(analyzed_result, metadata)
 
     def run_archived_test(
         self,
@@ -307,7 +386,7 @@ class AmmeterTestFramework:
         if metadata is not None and not isinstance(metadata, RunMetadata):
             raise TypeError("metadata must be RunMetadata")
         analyzed_result = self.run_analyzed_test(ammeter_name, plan)
-        return result_archive.save(analyzed_result, metadata)
+        return self._save_archived(analyzed_result, metadata, result_archive)
 
     def load_archived_result(self, run_id: str) -> ArchivedTestResult:
         return self._require_result_archive().load(run_id)
@@ -390,13 +469,27 @@ class AmmeterTestFramework:
             raise IncomparableAmmeterEvidenceError(
                 "Accuracy assessment requires at least two archived run IDs"
             )
-        archived_results = tuple(
-            result_archive.load(run_id) for run_id in requested_ids
-        )
-        return self.assess_accuracy(
-            archived_results,
-            reference=reference,
-        )
+        try:
+            archived_results = tuple(
+                result_archive.load(run_id) for run_id in requested_ids
+            )
+            assessment = self.assess_accuracy(
+                archived_results,
+                reference=reference,
+            )
+        except Exception as exc:
+            if self._logger is not None:
+                self._logger.error(
+                    f"Accuracy assessment of {len(requested_ids)} run(s) "
+                    f"failed: {exc}"
+                )
+            raise
+        if self._logger is not None:
+            self._logger.info(
+                f"Completed accuracy assessment across "
+                f"{len(requested_ids)} archived run(s)"
+            )
+        return assessment
 
     def assess_consistency(
         self,
@@ -431,10 +524,24 @@ class AmmeterTestFramework:
             raise IncomparableHistoryError(
                 "Historical consistency run IDs must be unique"
             )
-        archived_results = tuple(
-            result_archive.load(run_id) for run_id in requested_ids
-        )
-        return self.assess_consistency(archived_results)
+        try:
+            archived_results = tuple(
+                result_archive.load(run_id) for run_id in requested_ids
+            )
+            assessment = self.assess_consistency(archived_results)
+        except Exception as exc:
+            if self._logger is not None:
+                self._logger.error(
+                    f"Consistency assessment of {len(requested_ids)} run(s) "
+                    f"failed: {exc}"
+                )
+            raise
+        if self._logger is not None:
+            self._logger.info(
+                f"Completed consistency assessment across "
+                f"{len(requested_ids)} archived run(s)"
+            )
+        return assessment
 
     def visualize_result(
         self,
@@ -468,7 +575,44 @@ class AmmeterTestFramework:
         *,
         dpi: int = 160,
     ) -> Path:
-        return self._result_visualizer.save(figure, output_path, dpi=dpi)
+        try:
+            saved_path = self._result_visualizer.save(
+                figure,
+                output_path,
+                dpi=dpi,
+            )
+        except Exception as exc:
+            if self._logger is not None:
+                self._logger.error(f"Saving visualization failed: {exc}")
+            raise
+        if self._logger is not None:
+            self._logger.info(f"Saved visualization to {saved_path}")
+        return saved_path
+
+    def _save_archived(
+        self,
+        analyzed_result: AnalyzedSamplingResult,
+        metadata: RunMetadata | None,
+        result_archive: JsonResultArchive | None = None,
+    ) -> ArchivedTestResult:
+        archive = (
+            result_archive
+            if result_archive is not None
+            else self._require_result_archive()
+        )
+        try:
+            archived = archive.save(analyzed_result, metadata)
+        except Exception as exc:
+            if self._logger is not None:
+                self._logger.error(
+                    f"Archiving {analyzed_result.ammeter_name} failed: {exc}"
+                )
+            raise
+        if self._logger is not None:
+            self._logger.info(
+                f"Archived run {archived.run_id} for {archived.ammeter_name}"
+            )
+        return archived
 
     def _require_result_archive(self) -> JsonResultArchive:
         if self._result_archive is None:
@@ -517,6 +661,20 @@ def _sampling_plan_from_config(config: SamplingConfig) -> SamplingPlan:
         measurements_count=config.measurements_count,
         total_duration_seconds=config.total_duration_seconds,
     )
+
+
+def _validated_logger(logger: object | None) -> object | None:
+    if logger is None:
+        return None
+    required_methods = ("info", "error", "debug", "warning")
+    if any(
+        not callable(getattr(logger, method_name, None))
+        for method_name in required_methods
+    ):
+        raise TypeError(
+            "logger must implement info, error, debug, and warning"
+        )
+    return logger
 
 
 def _validate_result_archive(result_archive: object) -> None:
