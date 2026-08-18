@@ -4,15 +4,35 @@ import time
 from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime, timezone
 
-from src.utils.config import AmmeterConfig, ApplicationConfig
+from Ammeters.AcmeAmmeter import AcmeAmmeter
+from Ammeters.Circutor_Ammeter import CircutorAmmeter
+from Ammeters.Entes_Ammeter import EntesAmmeter
+from Ammeters.Greenlee_Ammeter import GreenleeAmmeter
+from Ammeters.base_ammeter import AmmeterEmulatorBase
+from Ammeters.faults import FaultProfile
+from src.utils.config import (
+    AmmeterConfig,
+    ApplicationConfig,
+    ConfiguredAmmeter,
+    ConfigurationError,
+    UsbAmmeterConfig,
+)
 
-from .ammeter import MonotonicClock, SocketAmmeter, WallClock
+from .ammeter import CommandAmmeter, MonotonicClock, WallClock
 from .contracts import Ammeter, MeasurementTransport
 from .errors import DuplicateAmmeterError, UnknownAmmeterError
 from .socket_transport import SocketTransport
+from .usb_transport import EmulatedUsbBackend, UsbTransport
 
 
-TransportBuilder = Callable[[AmmeterConfig, float], MeasurementTransport]
+TransportBuilder = Callable[[ConfiguredAmmeter, float], MeasurementTransport]
+
+_USB_EMULATOR_TYPES: dict[str, type[AmmeterEmulatorBase]] = {
+    "greenlee": GreenleeAmmeter,
+    "entes": EntesAmmeter,
+    "circutor": CircutorAmmeter,
+    "acme": AcmeAmmeter,
+}
 
 
 class AmmeterRegistry:
@@ -64,10 +84,11 @@ class AmmeterFactory:
         wall_clock: WallClock | None = None,
         monotonic_clock: MonotonicClock | None = None,
     ) -> None:
+        self._uses_default_transport_builder = transport_builder is None
         self._transport_builder = (
             transport_builder
             if transport_builder is not None
-            else _build_socket_transport
+            else _build_transport
         )
         self._wall_clock = (
             wall_clock
@@ -80,11 +101,23 @@ class AmmeterFactory:
 
     def create(
         self,
-        settings: AmmeterConfig,
+        settings: ConfiguredAmmeter,
         request_timeout_seconds: float,
+        *,
+        fault_profile: FaultProfile | None = None,
     ) -> Ammeter:
-        transport = self._transport_builder(settings, request_timeout_seconds)
-        return SocketAmmeter(
+        if self._uses_default_transport_builder:
+            transport = _build_transport(
+                settings,
+                request_timeout_seconds,
+                fault_profile=fault_profile,
+            )
+        else:
+            transport = self._transport_builder(
+                settings,
+                request_timeout_seconds,
+            )
+        return CommandAmmeter(
             name=settings.name,
             command=settings.command_bytes,
             transport=transport,
@@ -95,19 +128,74 @@ class AmmeterFactory:
     def create_registry(self, config: ApplicationConfig) -> AmmeterRegistry:
         timeout = config.communication.request_timeout_seconds
         return AmmeterRegistry(
-            self.create(settings, timeout) for settings in config.ammeters
+            self.create(
+                settings,
+                timeout,
+                fault_profile=(
+                    None
+                    if config.fault_injection is None
+                    else config.fault_injection.profile_for(settings.name)
+                ),
+            )
+            for settings in config.ammeters
         )
 
 
-def _build_socket_transport(
-    settings: AmmeterConfig,
+def _build_transport(
+    settings: ConfiguredAmmeter,
     request_timeout_seconds: float,
+    *,
+    fault_profile: FaultProfile | None = None,
 ) -> MeasurementTransport:
-    return SocketTransport(
-        host=settings.host,
-        port=settings.port,
-        timeout_seconds=request_timeout_seconds,
-    )
+    if isinstance(settings, AmmeterConfig):
+        return SocketTransport(
+            host=settings.host,
+            port=settings.port,
+            timeout_seconds=request_timeout_seconds,
+        )
+    if isinstance(settings, UsbAmmeterConfig):
+        if settings.emulated:
+            try:
+                emulator_type = _USB_EMULATOR_TYPES[settings.name]
+            except KeyError as exc:
+                supported = ", ".join(sorted(_USB_EMULATOR_TYPES))
+                raise ConfigurationError(
+                    f"Unsupported emulated USB ammeter {settings.name!r}; "
+                    f"supported values: {supported}"
+                ) from exc
+            measurement_source = emulator_type(
+                port=0,
+                command=settings.command_bytes,
+            )
+            backend = EmulatedUsbBackend(
+                command=settings.command_bytes,
+                measurement_provider=measurement_source.measure_current,
+                fault_profile=fault_profile,
+            )
+            return UsbTransport(
+                vendor_id=settings.vendor_id,
+                product_id=settings.product_id,
+                serial_number=settings.serial_number,
+                interface_number=settings.interface_number,
+                alternate_setting=settings.alternate_setting,
+                read_endpoint_address=settings.read_endpoint_address,
+                write_endpoint_address=settings.write_endpoint_address,
+                max_frame_bytes=settings.max_response_bytes,
+                timeout_seconds=request_timeout_seconds,
+                backend=backend,
+            )
+        return UsbTransport(
+            vendor_id=settings.vendor_id,
+            product_id=settings.product_id,
+            serial_number=settings.serial_number,
+            interface_number=settings.interface_number,
+            alternate_setting=settings.alternate_setting,
+            read_endpoint_address=settings.read_endpoint_address,
+            write_endpoint_address=settings.write_endpoint_address,
+            max_frame_bytes=settings.max_response_bytes,
+            timeout_seconds=request_timeout_seconds,
+        )
+    raise TypeError("Unsupported ammeter transport configuration")
 
 
 def _normalize_name(name: str) -> str:

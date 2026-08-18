@@ -15,8 +15,8 @@ WallClock = Callable[[], datetime]
 MonotonicClock = Callable[[], float]
 
 
-class SocketAmmeter:
-    """Transport-independent ammeter adapter for the emulator protocol."""
+class CommandAmmeter:
+    """Transport-independent adapter for a numeric command/response ammeter."""
 
     def __init__(
         self,
@@ -92,3 +92,8 @@ class SocketAmmeter:
         if not math.isfinite(current_a):
             raise AmmeterProtocolError("Ammeter returned a non-finite measurement")
         return current_a
+
+
+# Backward-compatible public name retained for existing callers. The adapter
+# itself has never owned a socket; TCP and USB are selected by its transport.
+SocketAmmeter = CommandAmmeter

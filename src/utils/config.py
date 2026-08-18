@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, TypeAlias
 
 from Ammeters.faults import FaultKind, FaultProfile, FaultRule
 
@@ -29,16 +30,100 @@ class ConfigurationError(ValueError):
     """The application configuration is missing or invalid."""
 
 
+class TransportKind(str, Enum):
+    """Supported physical communication interfaces."""
+
+    TCP = "tcp"
+    USB = "usb"
+
+
 @dataclass(frozen=True, slots=True)
 class AmmeterConfig:
+    """Backward-compatible TCP/LAN ammeter configuration."""
+
     name: str
     host: str
     port: int
     command: str
+    emulated: bool = True
 
     @property
     def command_bytes(self) -> bytes:
         return self.command.encode("utf-8")
+
+    @property
+    def transport_kind(self) -> TransportKind:
+        return TransportKind.TCP
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UsbAmmeterConfig:
+    """USB bulk/interrupt endpoint configuration for one ammeter."""
+
+    name: str
+    vendor_id: int
+    product_id: int
+    command: str
+    serial_number: str | None = None
+    interface_number: int = 0
+    alternate_setting: int = 0
+    read_endpoint_address: int | None = None
+    write_endpoint_address: int | None = None
+    max_response_bytes: int = MAX_COMMAND_BYTES
+    emulated: bool = False
+
+    def __post_init__(self) -> None:
+        _require_clean_config_text(self.name, "USB ammeter name")
+        _usb_identifier(self.vendor_id, "USB vendor_id")
+        _usb_identifier(self.product_id, "USB product_id")
+        _require_clean_config_text(self.command, "USB command")
+        if len(self.command.encode("utf-8")) > MAX_COMMAND_BYTES:
+            raise ConfigurationError(
+                f"USB command must not exceed {MAX_COMMAND_BYTES} encoded bytes"
+            )
+        if self.serial_number is not None:
+            _require_clean_config_text(self.serial_number, "USB serial_number")
+        _bounded_integer(
+            self.interface_number,
+            "USB interface_number",
+            minimum=0,
+            maximum=255,
+        )
+        _bounded_integer(
+            self.alternate_setting,
+            "USB alternate_setting",
+            minimum=0,
+            maximum=255,
+        )
+        _optional_usb_endpoint(
+            self.read_endpoint_address,
+            "USB read_endpoint_address",
+            input_endpoint=True,
+        )
+        _optional_usb_endpoint(
+            self.write_endpoint_address,
+            "USB write_endpoint_address",
+            input_endpoint=False,
+        )
+        _bounded_integer(
+            self.max_response_bytes,
+            "USB max_response_bytes",
+            minimum=1,
+            maximum=1_048_576,
+        )
+        if not isinstance(self.emulated, bool):
+            raise ConfigurationError("USB emulated must be a bool")
+
+    @property
+    def command_bytes(self) -> bytes:
+        return self.command.encode("utf-8")
+
+    @property
+    def transport_kind(self) -> TransportKind:
+        return TransportKind.USB
+
+
+ConfiguredAmmeter: TypeAlias = AmmeterConfig | UsbAmmeterConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,7 +475,7 @@ class FaultInjectionConfig:
 
 @dataclass(frozen=True, slots=True)
 class ApplicationConfig:
-    ammeters: tuple[AmmeterConfig, ...]
+    ammeters: tuple[ConfiguredAmmeter, ...]
     communication: CommunicationConfig
     sampling: SamplingConfig | None = None
     result_management: ResultManagementConfig | None = None
@@ -444,8 +529,9 @@ def load_application_config(
     if not isinstance(raw_ammeters, Mapping) or not raw_ammeters:
         raise ConfigurationError("'ammeters' must be a non-empty mapping")
 
-    ammeters: list[AmmeterConfig] = []
-    endpoints: set[tuple[str, int]] = set()
+    ammeters: list[ConfiguredAmmeter] = []
+    tcp_endpoints: set[tuple[str, int]] = set()
+    usb_interfaces: set[tuple[int, int, str | None, int]] = set()
     names: set[str] = set()
     for raw_name, raw_settings in raw_ammeters.items():
         if not isinstance(raw_name, str) or not raw_name.strip():
@@ -457,17 +543,7 @@ def load_application_config(
         if not isinstance(raw_settings, Mapping):
             raise ConfigurationError(f"ammeters.{name} must be a mapping")
 
-        host = raw_settings.get("host")
-        port = raw_settings.get("port")
         command = raw_settings.get("command")
-
-        if not isinstance(host, str) or not host.strip():
-            raise ConfigurationError(f"ammeters.{name}.host must be a non-empty string")
-        host = host.strip()
-        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65_535:
-            raise ConfigurationError(
-                f"ammeters.{name}.port must be an integer between 1 and 65535"
-            )
         if not isinstance(command, str) or not command.strip():
             raise ConfigurationError(
                 f"ammeters.{name}.command must be a non-empty string"
@@ -486,14 +562,155 @@ def load_application_config(
                 f"{MAX_COMMAND_BYTES} encoded bytes"
             )
 
-        endpoint = (host, port)
-        if endpoint in endpoints:
+        raw_transport = raw_settings.get("transport", TransportKind.TCP.value)
+        try:
+            transport_kind = TransportKind(raw_transport)
+        except (TypeError, ValueError) as exc:
             raise ConfigurationError(
-                f"Duplicate ammeter endpoint configured at {host}:{port}"
+                f"ammeters.{name}.transport must be 'tcp' or 'usb'"
+            ) from exc
+
+        if transport_kind is TransportKind.TCP:
+            unexpected_keys = set(raw_settings) - {
+                "transport",
+                "host",
+                "port",
+                "command",
+                "emulated",
+            }
+            if unexpected_keys:
+                raise ConfigurationError(
+                    f"ammeters.{name} contains unsupported TCP keys: "
+                    + ", ".join(sorted(str(key) for key in unexpected_keys))
+                )
+            host = raw_settings.get("host")
+            port = raw_settings.get("port")
+            emulated = raw_settings.get("emulated", True)
+            if not isinstance(host, str) or not host.strip():
+                raise ConfigurationError(
+                    f"ammeters.{name}.host must be a non-empty string"
+                )
+            host = host.strip()
+            if (
+                isinstance(port, bool)
+                or not isinstance(port, int)
+                or not 1 <= port <= 65_535
+            ):
+                raise ConfigurationError(
+                    f"ammeters.{name}.port must be an integer between 1 and 65535"
+                )
+            if not isinstance(emulated, bool):
+                raise ConfigurationError(
+                    f"ammeters.{name}.emulated must be a bool"
+                )
+            endpoint = (host, port)
+            if endpoint in tcp_endpoints:
+                raise ConfigurationError(
+                    f"Duplicate ammeter endpoint configured at {host}:{port}"
+                )
+            tcp_endpoints.add(endpoint)
+            ammeters.append(
+                AmmeterConfig(
+                    name=name,
+                    host=host,
+                    port=port,
+                    command=command,
+                    emulated=emulated,
+                )
             )
-        endpoints.add(endpoint)
+            continue
+
+        unexpected_keys = set(raw_settings) - {
+            "transport",
+            "vendor_id",
+            "product_id",
+            "serial_number",
+            "interface_number",
+            "alternate_setting",
+            "read_endpoint_address",
+            "write_endpoint_address",
+            "max_response_bytes",
+            "command",
+            "emulated",
+        }
+        if unexpected_keys:
+            raise ConfigurationError(
+                f"ammeters.{name} contains unsupported USB keys: "
+                + ", ".join(sorted(str(key) for key in unexpected_keys))
+            )
+        vendor_id = _usb_identifier(
+            raw_settings.get("vendor_id"),
+            f"ammeters.{name}.vendor_id",
+        )
+        product_id = _usb_identifier(
+            raw_settings.get("product_id"),
+            f"ammeters.{name}.product_id",
+        )
+        serial_number = raw_settings.get("serial_number")
+        if serial_number is not None:
+            _require_clean_config_text(
+                serial_number,
+                f"ammeters.{name}.serial_number",
+            )
+        interface_number = _bounded_integer(
+            raw_settings.get("interface_number", 0),
+            f"ammeters.{name}.interface_number",
+            minimum=0,
+            maximum=255,
+        )
+        alternate_setting = _bounded_integer(
+            raw_settings.get("alternate_setting", 0),
+            f"ammeters.{name}.alternate_setting",
+            minimum=0,
+            maximum=255,
+        )
+        read_endpoint_address = _optional_usb_endpoint(
+            raw_settings.get("read_endpoint_address"),
+            f"ammeters.{name}.read_endpoint_address",
+            input_endpoint=True,
+        )
+        write_endpoint_address = _optional_usb_endpoint(
+            raw_settings.get("write_endpoint_address"),
+            f"ammeters.{name}.write_endpoint_address",
+            input_endpoint=False,
+        )
+        max_response_bytes = _bounded_integer(
+            raw_settings.get("max_response_bytes", MAX_COMMAND_BYTES),
+            f"ammeters.{name}.max_response_bytes",
+            minimum=1,
+            maximum=1_048_576,
+        )
+        emulated = raw_settings.get("emulated", False)
+        if not isinstance(emulated, bool):
+            raise ConfigurationError(
+                f"ammeters.{name}.emulated must be a bool"
+            )
+        usb_identity = (
+            vendor_id,
+            product_id,
+            serial_number,
+            interface_number,
+        )
+        if usb_identity in usb_interfaces:
+            raise ConfigurationError(
+                "Duplicate USB ammeter interface configured for "
+                f"{vendor_id:#06x}:{product_id:#06x}"
+            )
+        usb_interfaces.add(usb_identity)
         ammeters.append(
-            AmmeterConfig(name=name, host=host, port=port, command=command)
+            UsbAmmeterConfig(
+                name=name,
+                vendor_id=vendor_id,
+                product_id=product_id,
+                command=command,
+                serial_number=serial_number,
+                interface_number=interface_number,
+                alternate_setting=alternate_setting,
+                read_endpoint_address=read_endpoint_address,
+                write_endpoint_address=write_endpoint_address,
+                max_response_bytes=max_response_bytes,
+                emulated=emulated,
+            )
         )
 
     raw_communication = raw_config.get("communication", {})
@@ -532,6 +749,9 @@ def load_application_config(
     fault_injection = _parse_fault_injection_config(
         raw_config,
         ammeter_names=tuple(settings.name for settings in ammeters),
+        emulated_ammeter_names=tuple(
+            settings.name for settings in ammeters if settings.emulated
+        ),
     )
     return ApplicationConfig(
         ammeters=tuple(ammeters),
@@ -548,6 +768,7 @@ def _parse_fault_injection_config(
     raw_config: Mapping[str, Any],
     *,
     ammeter_names: tuple[str, ...],
+    emulated_ammeter_names: tuple[str, ...],
 ) -> FaultInjectionConfig | None:
     raw_emulation = raw_config.get("emulation")
     if raw_emulation is None:
@@ -585,6 +806,7 @@ def _parse_fault_injection_config(
         )
 
     configured_names = set(ammeter_names)
+    emulated_names = set(emulated_ammeter_names)
     normalized_names: set[str] = set()
     profiles: list[tuple[str, FaultProfile]] = []
     supported_rule_keys = {
@@ -610,6 +832,11 @@ def _parse_fault_injection_config(
             raise ConfigurationError(
                 "Fault injection references an unknown ammeter: "
                 f"{normalized_name}"
+            )
+        if normalized_name not in emulated_names:
+            raise ConfigurationError(
+                "Fault injection is available only for locally emulated "
+                f"ammeters: {normalized_name}"
             )
         if not isinstance(raw_rules, list) or not raw_rules:
             raise ConfigurationError(
@@ -1055,6 +1282,56 @@ def _parse_reference_current_config(
 def _normalized_ammeter_name(value: object, field_name: str) -> str:
     clean = _require_clean_config_text(value, field_name)
     return clean.casefold()
+
+
+def _bounded_integer(
+    value: object,
+    field_name: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not minimum <= value <= maximum
+    ):
+        raise ConfigurationError(
+            f"{field_name} must be an integer from {minimum} through {maximum}"
+        )
+    return value
+
+
+def _usb_identifier(value: object, field_name: str) -> int:
+    return _bounded_integer(
+        value,
+        field_name,
+        minimum=1,
+        maximum=0xFFFF,
+    )
+
+
+def _optional_usb_endpoint(
+    value: object,
+    field_name: str,
+    *,
+    input_endpoint: bool,
+) -> int | None:
+    if value is None:
+        return None
+    endpoint = _bounded_integer(
+        value,
+        field_name,
+        minimum=1,
+        maximum=0xFF,
+    )
+    is_input = bool(endpoint & 0x80)
+    if is_input != input_endpoint:
+        expected = "IN" if input_endpoint else "OUT"
+        raise ConfigurationError(
+            f"{field_name} must be a USB {expected} endpoint address"
+        )
+    return endpoint
 
 
 def _positive_number(

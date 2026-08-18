@@ -5,11 +5,22 @@ from uuid import uuid4
 
 from main import run_archive_demo
 from src.testing.archive_models import RunMetadata
+from src.utils.config import DEFAULT_CONFIG_PATH
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Acquire one comparable archive batch from every ammeter",
+    )
+    parser.add_argument(
+        "--config",
+        default=str(DEFAULT_CONFIG_PATH),
+        help="YAML configuration for TCP/LAN or USB ammeters",
+    )
+    parser.add_argument(
+        "--ammeter",
+        default=None,
+        help="Run only this configured ammeter; defaults to all ammeters",
     )
     parser.add_argument(
         "--comparison-group",
@@ -31,7 +42,11 @@ def main() -> int:
         attributes=(("comparison_group", comparison_group),),
     )
     print(f"Comparison group: {comparison_group}")
-    for name, archived in run_archive_demo(metadata=metadata).items():
+    for name, archived in run_archive_demo(
+        arguments.config,
+        ammeter_name=arguments.ammeter,
+        metadata=metadata,
+    ).items():
         statistics = archived.analyzed_result.statistics
         print(
             f"{name.upper()}: run {archived.run_id} "

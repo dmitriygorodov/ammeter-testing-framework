@@ -10,6 +10,10 @@ class AmmeterTimeoutError(AmmeterClientError):
     """An ammeter operation did not finish within its deadline."""
 
 
+class AmmeterTransportDependencyError(AmmeterClientError):
+    """An optional transport runtime or system driver is unavailable."""
+
+
 class AmmeterProtocolError(AmmeterClientError):
     """An ammeter request or response violated the wire protocol."""
 

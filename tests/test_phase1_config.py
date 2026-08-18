@@ -5,7 +5,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.utils.config import ConfigurationError, load_application_config
+from src.utils.config import (
+    ConfigurationError,
+    UsbAmmeterConfig,
+    load_application_config,
+)
 
 
 class ApplicationConfigTests(unittest.TestCase):
@@ -20,16 +24,18 @@ class ApplicationConfigTests(unittest.TestCase):
 
         self.assertEqual(
             [ammeter.name for ammeter in config.ammeters],
-            ["greenlee", "entes", "circutor"],
+            ["greenlee", "entes", "circutor", "acme"],
         )
         self.assertEqual(
-            [ammeter.port for ammeter in config.ammeters],
+            [ammeter.port for ammeter in config.ammeters[:3]],
             [5000, 5001, 5002],
         )
         self.assertEqual(
             config.ammeters[2].command,
-            "MEASURE_CIRCUTOR -get_measurement",
+            "READ_CURRENT",
         )
+        self.assertIsInstance(config.ammeters[3], UsbAmmeterConfig)
+        self.assertTrue(config.ammeters[3].emulated)
 
     def test_duplicate_endpoint_is_rejected(self) -> None:
         invalid_config = """

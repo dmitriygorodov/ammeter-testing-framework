@@ -80,9 +80,9 @@ class FaultInjectionConfigTests(unittest.TestCase):
         self.assertTrue(faults.enabled)
         self.assertEqual(
             {ammeter.name for ammeter in config.ammeters},
-            {"greenlee", "entes", "circutor"},
+            {"greenlee", "entes", "circutor", "acme"},
         )
-        for ammeter_name in ("greenlee", "entes", "circutor"):
+        for ammeter_name in ("greenlee", "entes", "circutor", "acme"):
             with self.subTest(ammeter_name=ammeter_name):
                 profile = faults.profile_for(ammeter_name)
                 assert profile is not None
