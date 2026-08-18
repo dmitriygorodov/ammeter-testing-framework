@@ -37,11 +37,18 @@ ammeters:
     port: 5002
     command: "MEASURE_CIRCUTOR -get_measurement"
   acme:
-    transport: "tcp"
+    transport: "usb"
     emulated: true
-    host: "127.0.0.1"
-    port: 5003
-    command: "MEASURE_ACME -get_measurement"
+    # Replace these example identifiers with the real bench device values.
+    vendor_id: 0x1234
+    product_id: 0x5678
+    serial_number: "ACM-USB-001"
+    interface_number: 0
+    alternate_setting: 0
+    read_endpoint_address: 0x81
+    write_endpoint_address: 0x02
+    max_response_bytes: 2048
+    command: "READ_CURRENT"
 
 emulation:
   fault_injection:
@@ -56,6 +63,10 @@ emulation:
           type: current_offset
           current_offset_a: 1000.0
       circutor:
+        - request_number: 1
+          type: current_offset
+          current_offset_a: 1000.0
+      acme:
         - request_number: 1
           type: current_offset
           current_offset_a: 1000.0

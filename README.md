@@ -61,9 +61,10 @@ commands, POSIX signals, a GUI session, or platform-specific absolute paths.
 python main.py
 ```
 
-The demo starts all three local emulators, waits until their sockets are ready,
-collects one measurement from each, and always shuts every server down. Values
-change on every run because the supplied emulators generate random test inputs.
+The demo starts every configured emulated ammeter, waits until each one is
+ready, collects one measurement from each, and always shuts every emulator
+down. Values change on every run because the supplied emulators generate random
+test inputs.
 
 ```text
 Ammeter measurements:
@@ -104,8 +105,8 @@ only its human-readable console output.
 
 ## Run the Phase 5 archive demo
 
-The archive example performs acquisition, analysis, and persistence for all
-three local emulators:
+The archive example performs acquisition, analysis, and persistence for every
+configured emulated ammeter:
 
 ```shell
 python -m examples.run_archive_test
@@ -129,7 +130,7 @@ archives remain loadable and listable; reads never move them automatically.
 Callers still load a run by UUID, without needing to know its folder.
 
 Acquisition or analysis failures are never represented as completed archives.
-One demo invocation assigns all three results a unique shared
+One demo invocation assigns all collected results a unique shared
 `comparison_group`, so their UUIDs can be passed directly to the accuracy
 commands. Supply a meaningful bench identity when one exists:
 
@@ -209,17 +210,18 @@ or PDF, validates DPI from 72 through 600, and refuses to overwrite a file.
 ## Run a Phase 10 fault scenario
 
 Fault injection is disabled in the default configuration. One runnable example
-defines the same deterministic overcurrent scenario for all three emulators and
-demonstrates that valid but extreme current becomes a Phase 7 `FAIL`, not an
-execution error:
+defines the same deterministic overcurrent scenario for all four configured
+ammeters and demonstrates that valid but extreme current becomes a Phase 7
+`FAIL`, not an execution error:
 
 ```shell
 python -m examples.run_acceptance_demo --config config/fault-scenario.example.yaml --ammeter greenlee
 python -m examples.run_acceptance_demo --config config/fault-scenario.example.yaml --ammeter entes
 python -m examples.run_acceptance_demo --config config/fault-scenario.example.yaml --ammeter circutor
+python -m examples.run_acceptance_demo --config config/fault-scenario.example.yaml --ammeter acme
 ```
 
-Omit `--ammeter` to evaluate all three in one invocation. Each command exits
+Omit `--ammeter` to evaluate all four in one invocation. Each command exits
 with status `2` because the simulated current exceeds the explicit limit.
 Protocol and transport faults instead raise the existing typed client errors
 and cannot create a completed archive.
@@ -687,7 +689,8 @@ loopback ports. They require no physical hardware and no external network.
 Ammeters/                 Emulator physics/lifecycle and compatibility client
 Ammeters/faults.py        Immutable deterministic emulator fault schedules
 config/config.yaml        Devices, sampling, acceptance, archive, plots, faults
-config/fault-scenario.example.yaml  Runnable three-ammeter overcurrent scenario
+config/fault-scenario.example.yaml  Runnable four-ammeter overcurrent scenario
+config/usb-bench.example.yaml       Example non-emulated USB bench device
 docs/                     Design, traceability, sample results, interview guide
 examples/                 Runnable demo, assessment, and visualization CLIs
 src/devices/              Contracts, record, transport, adapter, factory, registry
