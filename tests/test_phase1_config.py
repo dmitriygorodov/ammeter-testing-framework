@@ -32,7 +32,7 @@ class ApplicationConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             config.ammeters[2].command,
-            "READ_CURRENT",
+            "MEASURE_CIRCUTOR -get_measurement",
         )
         self.assertIsInstance(config.ammeters[3], UsbAmmeterConfig)
         self.assertTrue(config.ammeters[3].emulated)
